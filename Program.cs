@@ -9,7 +9,7 @@ class Program
 {
     static void Main()
     {
-        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP101";
+        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP102";
         string csvPattern = "*.csv";
         string outputXlsxAll = "/Users/moriyama_yuto/ExcelColumnExtract/converted.xlsx";
         string resultXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/result.xlsx";
@@ -58,7 +58,8 @@ class Program
             double? foundR = null, foundS = null, foundT = null;
             bool? prevR = null;
             int sCount = 0;
-
+            
+            int sStartRow = -1;   // ★ Sが1になり始めた行
             for (int r = 2; r <= lastRow; r++)
             {
                 bool rBool = bool.TryParse(allWs.Cell(r, "R").GetString(), out var rb) && rb;
@@ -67,10 +68,31 @@ class Program
                     foundR = double.TryParse(allWs.Cell(r, "C").GetString(), out var v) ? v : null;
                 prevR = rBool;
 
-                sCount = allWs.Cell(r, "S").GetString() == "1" ? sCount + 1 : 0;
-                if (foundS == null && sCount >= 3)
-                    foundS = double.TryParse(allWs.Cell(r, "C").GetString(), out var sv) ? sv : null;
+                string sStr = allWs.Cell(r, "S").GetString();
 
+                if (sStr == "1")
+                {
+                    if (sCount == 0)
+                    {
+                        // 1が始まった最初の行を記録
+                        sStartRow = r;
+                    }
+                    sCount++;
+                }
+                else
+                {
+                    sCount = 0;
+                    sStartRow = -1;
+                }
+
+                // ★ 3連続に達した瞬間に「最初の1の行」のC値を使う
+                if (foundS == null && sCount >= 3 && sStartRow != -1)
+                {
+                    foundS = double.TryParse(
+                    allWs.Cell(sStartRow, "C").GetString(),
+                    out var sv
+                    ) ? sv : null;
+                }
                 if (foundT == null && bool.TryParse(allWs.Cell(r, "T").GetString(), out var tb) && tb)
                     foundT = double.TryParse(allWs.Cell(r, "C").GetString(), out var tv) ? tv : null;
             }
@@ -78,6 +100,12 @@ class Program
             AddValue(dataR, subject, taskNumber, foundR);
             AddValue(dataS, subject, taskNumber, foundS);
             AddValue(dataT, subject, taskNumber, foundT);
+            // ===== ログ出力（CSVごとのSRT）=====
+            Console.WriteLine($"[{Path.GetFileName(csvPath)}]");
+            Console.WriteLine($"  R: {(foundR.HasValue ? foundR.Value.ToString() : "(not found)")}");
+            Console.WriteLine($"  S: {(foundS.HasValue ? foundS.Value.ToString() : "(not found)")}");
+            Console.WriteLine($"  T: {(foundT.HasValue ? foundT.Value.ToString() : "(not found)")}");
+            Console.WriteLine();
         }
 
         using var wbResult = new XLWorkbook(resultXlsx);
