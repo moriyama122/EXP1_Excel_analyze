@@ -9,7 +9,7 @@ class Program
 {
     static void Main()
     {
-        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP101";
+        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP120";
         string csvPattern = "*.csv";
         string outputXlsxAll = "/Users/moriyama_yuto/ExcelColumnExtract/converted.xlsx";
         string resultXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/result.xlsx";
