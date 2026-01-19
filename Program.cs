@@ -2,21 +2,20 @@
 using System.IO;
 using System.Text;
 using System.Collections.Generic;
-using System.Linq;              // ★ 追加（Average用）
+using System.Linq;
 using ClosedXML.Excel;
 
 class Program
 {
     static void Main()
     {
-        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP120";
+        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ";
         string csvPattern = "*.csv";
         string outputXlsxAll = "/Users/moriyama_yuto/ExcelColumnExtract/converted.xlsx";
         string resultXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/result.xlsx";
 
-        var dataR = new Dictionary<string, Dictionary<int, List<double>>>(StringComparer.OrdinalIgnoreCase);
-        var dataS = new Dictionary<string, Dictionary<int, List<double>>>(StringComparer.OrdinalIgnoreCase);
-        var dataT = new Dictionary<string, Dictionary<int, List<double>>>(StringComparer.OrdinalIgnoreCase);
+        // subject -> task -> list of 最小TTC
+        var dataMinTTC = new Dictionary<string, Dictionary<int, List<double>>>(StringComparer.OrdinalIgnoreCase);
 
         var csvFiles = Directory.GetFiles(sourceFolder, csvPattern, SearchOption.AllDirectories);
         if (csvFiles.Length == 0)
@@ -35,7 +34,7 @@ class Program
             var taskAndRun = parts[1].Split('-');
             if (!int.TryParse(taskAndRun[0], out int taskNumber)) continue;
 
-            // CSV → 一時Excel
+            // CSV → Excel
             using (var wbTemp = new XLWorkbook())
             {
                 var wsTemp = wbTemp.Worksheets.Add("Sheet1");
@@ -51,97 +50,105 @@ class Program
                 wbTemp.SaveAs(outputXlsxAll);
             }
 
-            using var allWb = new XLWorkbook(outputXlsxAll);
-            var allWs = allWb.Worksheet("Sheet1");
-            var lastRowUsed = allWs.LastRowUsed();
-            if (lastRowUsed == null)
-            {
-                Console.WriteLine("シートが空です: " + csvPath);
-                continue;   // or return;
-            }
-            int lastRow = lastRowUsed.RowNumber();
+            using var wb = new XLWorkbook(outputXlsxAll);
+            var ws = wb.Worksheet("Sheet1");
+            int lastRow = ws.LastRowUsed().RowNumber();
 
-            double? foundR = null, foundS = null, foundT = null;
-            bool? prevR = null;
+            bool rStarted = false;
+            bool inRange = false;
+            bool finished = false;
             int sCount = 0;
-            
-            int sStartRow = -1;   // ★ Sが1になり始めた行
+
+            double minTTC = double.MaxValue;
+            const double leadSpeed = 50.0 / 3.6; // m/s
+
             for (int r = 2; r <= lastRow; r++)
             {
-                bool rBool = bool.TryParse(allWs.Cell(r, "R").GetString(), out var rb) && rb;
-                if (prevR == null) prevR = rBool;
-                if (foundR == null && prevR == false && rBool)
-                    foundR = double.TryParse(allWs.Cell(r, "C").GetString(), out var v) ? v : null;
-                prevR = rBool;
-
-                string sStr = allWs.Cell(r, "S").GetString();
-
-                if (sStr == "1")
+                // R
+                if (!rStarted &&
+                    bool.TryParse(ws.Cell(r, "R").GetString(), out bool rBool) && rBool)
                 {
-                    if (sCount == 0)
-                    {
-                        // 1が始まった最初の行を記録
-                        sStartRow = r;
-                    }
-                    sCount++;
-                }
-                else
-                {
+                    rStarted = true;
                     sCount = 0;
-                    sStartRow = -1;
                 }
 
-                // ★ 3連続に達した瞬間に「最初の1の行」のC値を使う
-                if (foundS == null && sCount >= 3 && sStartRow != -1)
+                // S (3連続)
+                if (rStarted && !inRange)
                 {
-                    foundS = double.TryParse(
-                    allWs.Cell(sStartRow, "C").GetString(),
-                    out var sv
-                    ) ? sv : null;
+                    if (ws.Cell(r, "S").GetString() == "1")
+                    {
+                        sCount++;
+                        if (sCount >= 3)
+                            inRange = true;
+                    }
+                    else
+                    {
+                        sCount = 0;
+                    }
                 }
-                if (foundT == null && bool.TryParse(allWs.Cell(r, "T").GetString(), out var tb) && tb)
-                    foundT = double.TryParse(allWs.Cell(r, "C").GetString(), out var tv) ? tv : null;
+
+                // TTC計算
+                if (inRange && !finished)
+                {
+                    if (
+                        double.TryParse(ws.Cell(r, "D").GetString(), out double egoSpeedKm) &&
+                        double.TryParse(ws.Cell(r, "M").GetString(), out double egoX) &&
+                        double.TryParse(ws.Cell(r, "N").GetString(), out double egoZ) &&
+                        double.TryParse(ws.Cell(r, "P").GetString(), out double leadX) &&
+                        double.TryParse(ws.Cell(r, "Q").GetString(), out double leadZ)
+                    )
+                    {
+                        double egoSpeed = egoSpeedKm / 3.6;
+                        double relSpeed = egoSpeed - leadSpeed;
+                        if (relSpeed > 0)
+                        {
+                            double dist = Math.Sqrt(
+                                Math.Pow(leadX - egoX, 2) +
+                                Math.Pow(leadZ - egoZ, 2)
+                            );
+                            double ttc = dist / relSpeed;
+                            if (ttc < minTTC)
+                                minTTC = ttc;
+                        }
+                    }
+                }
+
+                // U
+                if (inRange &&
+                    bool.TryParse(ws.Cell(r, "U").GetString(), out bool uBool) &&
+                    uBool)
+                {
+                    finished = true;
+                    break;
+                }
             }
 
-            AddValue(dataR, subject, taskNumber, foundR);
-            AddValue(dataS, subject, taskNumber, foundS);
-            AddValue(dataT, subject, taskNumber, foundT);
-            // ===== ログ出力（CSVごとのSRT）=====
-            Console.WriteLine($"[{Path.GetFileName(csvPath)}]");
-            Console.WriteLine($"  R: {(foundR.HasValue ? foundR.Value.ToString() : "(not found)")}");
-            Console.WriteLine($"  S: {(foundS.HasValue ? foundS.Value.ToString() : "(not found)")}");
-            Console.WriteLine($"  T: {(foundT.HasValue ? foundT.Value.ToString() : "(not found)")}");
-            Console.WriteLine();
+            if (!inRange || !finished || minTTC == double.MaxValue)
+            {
+                Console.WriteLine($"[{Path.GetFileName(csvPath)}] TTC未算出");
+                continue;
+            }
+
+            dataMinTTC.TryAdd(subject, new Dictionary<int, List<double>>());
+            dataMinTTC[subject].TryAdd(taskNumber, new List<double>());
+            dataMinTTC[subject][taskNumber].Add(minTTC);
+
+            Console.WriteLine($"[{Path.GetFileName(csvPath)}] 最小TTC = {minTTC:F2}s");
         }
 
+        // result.xlsx 出力
         using var wbResult = new XLWorkbook(resultXlsx);
         var wsResult = wbResult.Worksheet("Result");
 
-        // ===== ヘッダー =====
-        foreach (var subject in dataR.Keys)
-        foreach (var task in dataR[subject].Keys)
-        {
-            int sc = TaskStartCol(task);
-            wsResult.Cell(1, sc).Value = $"task{task}";
-            wsResult.Range(1, sc, 1, sc + 2).Merge();
-            wsResult.Cell(2, sc).Value = "R";
-            wsResult.Cell(2, sc + 1).Value = "S";
-            wsResult.Cell(2, sc + 2).Value = "T";
-        }
-
-        // ===== データ =====
-        foreach (var subject in dataR.Keys)
+        foreach (var subject in dataMinTTC.Keys)
         {
             int row = FindOrCreateSubjectRow(wsResult, subject);
-            foreach (var task in dataR[subject].Keys)
+            foreach (var task in dataMinTTC[subject].Keys)
             {
-                int sc = TaskStartCol(task);
-                if (dataR[subject].ContainsKey(task))
-                    wsResult.Cell(row, sc).Value = dataR[subject][task].Average();
-                if (dataS.ContainsKey(subject) && dataS[subject].ContainsKey(task))
-                    wsResult.Cell(row, sc + 1).Value = dataS[subject][task].Average();
-                if (dataT.ContainsKey(subject) && dataT[subject].ContainsKey(task))
-                    wsResult.Cell(row, sc + 2).Value = dataT[subject][task].Average();
+                int col = TaskStartCol(task);
+                wsResult.Cell(1, col).Value = $"task{task}";
+                wsResult.Cell(2, col).Value = "最小TTC[s]";
+                wsResult.Cell(row, col).Value = dataMinTTC[subject][task].Average();
             }
         }
 
@@ -149,10 +156,7 @@ class Program
         Console.WriteLine("アップデート完了！");
     }
 
-    // ===== ここから static メソッド =====
-
-    static int TaskStartCol(int taskNumber)
-        => 2 + (taskNumber - 1) * 3;
+    static int TaskStartCol(int taskNumber) => 2 + (taskNumber - 1);
 
     static int FindOrCreateSubjectRow(IXLWorksheet ws, string subject)
     {
@@ -160,18 +164,7 @@ class Program
         for (int r = 3; r <= lastRow; r++)
             if (ws.Cell(r, 1).GetString().Equals(subject, StringComparison.OrdinalIgnoreCase))
                 return r;
-
         ws.Cell(lastRow + 1, 1).Value = subject;
         return lastRow + 1;
-    }
-
-    static void AddValue(
-        Dictionary<string, Dictionary<int, List<double>>> dict,
-        string subj, int task, double? val)
-    {
-        if (val == null) return;
-        dict.TryAdd(subj, new Dictionary<int, List<double>>());
-        dict[subj].TryAdd(task, new List<double>());
-        dict[subj][task].Add(val.Value);
     }
 }
