@@ -9,7 +9,7 @@ class Program
 {
     static void Main()
     {
-        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP102";
+        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP101";
         string csvPattern = "*.csv";
         string outputXlsxAll = "/Users/moriyama_yuto/ExcelColumnExtract/converted.xlsx";
         string resultXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/result.xlsx";
@@ -53,7 +53,13 @@ class Program
 
             using var allWb = new XLWorkbook(outputXlsxAll);
             var allWs = allWb.Worksheet("Sheet1");
-            int lastRow = allWs.LastRowUsed().RowNumber();
+            var lastRowUsed = allWs.LastRowUsed();
+            if (lastRowUsed == null)
+            {
+                Console.WriteLine("シートが空です: " + csvPath);
+                continue;   // or return;
+            }
+            int lastRow = lastRowUsed.RowNumber();
 
             double? foundR = null, foundS = null, foundT = null;
             bool? prevR = null;
