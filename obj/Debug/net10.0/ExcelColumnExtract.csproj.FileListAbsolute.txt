@@ -23,3 +23,4 @@
 /Users/moriyama_yuto/ExcelColumnExtract/obj/Debug/net10.0/ExcelColumnExtract.csproj.AssemblyReference.cache
 /Users/moriyama_yuto/ExcelColumnExtract/obj/Debug/net10.0/ExcelCol.2E680E94.Up2Date
 /Users/moriyama_yuto/ExcelColumnExtract/bin/Debug/net10.0/CsvHelper.dll
+/Users/moriyama_yuto/ExcelColumnExtract/obj/Debug/net10.0/ExcelColumnExtract.sourcelink.json

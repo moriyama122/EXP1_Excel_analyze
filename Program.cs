@@ -1,91 +1,143 @@
 ﻿using System;
 using System.IO;
 using System.Text;
+using System.Collections.Generic;
+using System.Linq;              // ★ 追加（Average用）
 using ClosedXML.Excel;
 
 class Program
 {
     static void Main()
     {
-        // --- 設定（環境に合わせて書き換えてください） ---
-        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/予備実験1データ/EX101";
-        string csvPattern = "EX101_task1-1.csv";  // 読みたい CSV
-        string outputXlsxAll = "/Users/moriyama_yuto/ExcelColumnExtract/converted.xlsx";  // 中間Excel
-        string resultXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/result.xlsx";  // 最終結果
-        // ----------------------------------------------------
+        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP101";
+        string csvPattern = "*.csv";
+        string outputXlsxAll = "/Users/moriyama_yuto/ExcelColumnExtract/converted.xlsx";
+        string resultXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/result.xlsx";
 
-        // 1) CSVファイルを探す
+        var dataR = new Dictionary<string, Dictionary<int, List<double>>>(StringComparer.OrdinalIgnoreCase);
+        var dataS = new Dictionary<string, Dictionary<int, List<double>>>(StringComparer.OrdinalIgnoreCase);
+        var dataT = new Dictionary<string, Dictionary<int, List<double>>>(StringComparer.OrdinalIgnoreCase);
+
         var csvFiles = Directory.GetFiles(sourceFolder, csvPattern, SearchOption.AllDirectories);
         if (csvFiles.Length == 0)
         {
-            Console.WriteLine("CSVファイルが見つかりません: " + sourceFolder);
+            Console.WriteLine("CSVファイルが見つかりません");
             return;
         }
 
-        string csvPath = csvFiles[0];
-        Console.WriteLine("CSV を変換します: " + csvPath);
-
-        // 2) CSV → Excel へ変換
-        using (var workbook = new XLWorkbook())
+        foreach (var csvPath in csvFiles)
         {
-            var ws = workbook.Worksheets.Add("Sheet1");
-            using (var reader = new StreamReader(csvPath, Encoding.UTF8))
+            var fname = Path.GetFileNameWithoutExtension(csvPath);
+            var parts = fname.Split('_');
+            if (parts.Length < 2) continue;
+
+            string subject = parts[0];
+            var taskAndRun = parts[1].Split('-');
+            if (!int.TryParse(taskAndRun[0], out int taskNumber)) continue;
+
+            // CSV → 一時Excel
+            using (var wbTemp = new XLWorkbook())
             {
+                var wsTemp = wbTemp.Worksheets.Add("Sheet1");
+                using var reader = new StreamReader(csvPath, Encoding.UTF8);
                 int row = 1;
                 while (!reader.EndOfStream)
                 {
-                    string line = reader.ReadLine() ?? "";
-                    string[] values = line.Split(',');  // カンマ区切り
-
-                    for (int col = 0; col < values.Length; col++)
-                    {
-                        ws.Cell(row, col + 1).Value = values[col];
-                    }
+                    var vals = (reader.ReadLine() ?? "").Split(',');
+                    for (int i = 0; i < vals.Length; i++)
+                        wsTemp.Cell(row, i + 1).Value = vals[i];
                     row++;
                 }
+                wbTemp.SaveAs(outputXlsxAll);
             }
-            workbook.SaveAs(outputXlsxAll);
+
+            using var allWb = new XLWorkbook(outputXlsxAll);
+            var allWs = allWb.Worksheet("Sheet1");
+            int lastRow = allWs.LastRowUsed().RowNumber();
+
+            double? foundR = null, foundS = null, foundT = null;
+            bool? prevR = null;
+            int sCount = 0;
+
+            for (int r = 2; r <= lastRow; r++)
+            {
+                bool rBool = bool.TryParse(allWs.Cell(r, "R").GetString(), out var rb) && rb;
+                if (prevR == null) prevR = rBool;
+                if (foundR == null && prevR == false && rBool)
+                    foundR = double.TryParse(allWs.Cell(r, "C").GetString(), out var v) ? v : null;
+                prevR = rBool;
+
+                sCount = allWs.Cell(r, "S").GetString() == "1" ? sCount + 1 : 0;
+                if (foundS == null && sCount >= 3)
+                    foundS = double.TryParse(allWs.Cell(r, "C").GetString(), out var sv) ? sv : null;
+
+                if (foundT == null && bool.TryParse(allWs.Cell(r, "T").GetString(), out var tb) && tb)
+                    foundT = double.TryParse(allWs.Cell(r, "C").GetString(), out var tv) ? tv : null;
+            }
+
+            AddValue(dataR, subject, taskNumber, foundR);
+            AddValue(dataS, subject, taskNumber, foundS);
+            AddValue(dataT, subject, taskNumber, foundT);
         }
 
-        Console.WriteLine("変換完了: " + outputXlsxAll);
+        using var wbResult = new XLWorkbook(resultXlsx);
+        var wsResult = wbResult.Worksheet("Result");
 
-        // 3) 中間Excel から C列 と R列 を抜き出す
-        using var allWb = new XLWorkbook(outputXlsxAll);
-        var allWs = allWb.Worksheet("Sheet1");
-
-        using var resultWb = new XLWorkbook();
-        var resultWs = resultWb.Worksheets.Add("Result");
-
-        // ヘッダーを設定
-        resultWs.Cell(1, 1).Value = "元ファイル";
-        resultWs.Cell(1, 2).Value = "C列の値";
-        resultWs.Cell(1, 3).Value = "R列の値";
-
-        int outRow = 2;
-
-        // 最後の行番号
-        var lastRow = allWs.LastRowUsed().RowNumber();
-
-        // 2行目（ヘッダーをスキップ）からループ
-        for (int r = 2; r <= lastRow; r++)
+        // ===== ヘッダー =====
+        foreach (var subject in dataR.Keys)
+        foreach (var task in dataR[subject].Keys)
         {
-            // C列（3番目）と R列（18番目）を取得
-            var valueC = allWs.Cell(r, "C").GetValue<string>();
-            var valueR = allWs.Cell(r, "R").GetValue<string>();
-
-            // 空白チェック（必要なければ削除OK）
-            if (string.IsNullOrEmpty(valueC) && string.IsNullOrEmpty(valueR))
-                continue;
-
-            resultWs.Cell(outRow, 1).Value = Path.GetFileName(csvPath);
-            resultWs.Cell(outRow, 2).Value = valueC;
-            resultWs.Cell(outRow, 3).Value = valueR;
-            outRow++;
+            int sc = TaskStartCol(task);
+            wsResult.Cell(1, sc).Value = $"task{task}";
+            wsResult.Range(1, sc, 1, sc + 2).Merge();
+            wsResult.Cell(2, sc).Value = "R";
+            wsResult.Cell(2, sc + 1).Value = "S";
+            wsResult.Cell(2, sc + 2).Value = "T";
         }
 
-        // 結果を保存
-        resultWb.SaveAs(resultXlsx);
+        // ===== データ =====
+        foreach (var subject in dataR.Keys)
+        {
+            int row = FindOrCreateSubjectRow(wsResult, subject);
+            foreach (var task in dataR[subject].Keys)
+            {
+                int sc = TaskStartCol(task);
+                if (dataR[subject].ContainsKey(task))
+                    wsResult.Cell(row, sc).Value = dataR[subject][task].Average();
+                if (dataS.ContainsKey(subject) && dataS[subject].ContainsKey(task))
+                    wsResult.Cell(row, sc + 1).Value = dataS[subject][task].Average();
+                if (dataT.ContainsKey(subject) && dataT[subject].ContainsKey(task))
+                    wsResult.Cell(row, sc + 2).Value = dataT[subject][task].Average();
+            }
+        }
 
-        Console.WriteLine("C列 と R列 の抽出結果を保存しました: " + resultXlsx);
+        wbResult.SaveAs(resultXlsx);
+        Console.WriteLine("アップデート完了！");
+    }
+
+    // ===== ここから static メソッド =====
+
+    static int TaskStartCol(int taskNumber)
+        => 2 + (taskNumber - 1) * 3;
+
+    static int FindOrCreateSubjectRow(IXLWorksheet ws, string subject)
+    {
+        int lastRow = ws.LastRowUsed()?.RowNumber() ?? 2;
+        for (int r = 3; r <= lastRow; r++)
+            if (ws.Cell(r, 1).GetString().Equals(subject, StringComparison.OrdinalIgnoreCase))
+                return r;
+
+        ws.Cell(lastRow + 1, 1).Value = subject;
+        return lastRow + 1;
+    }
+
+    static void AddValue(
+        Dictionary<string, Dictionary<int, List<double>>> dict,
+        string subj, int task, double? val)
+    {
+        if (val == null) return;
+        dict.TryAdd(subj, new Dictionary<int, List<double>>());
+        dict[subj].TryAdd(task, new List<double>());
+        dict[subj][task].Add(val.Value);
     }
 }
