@@ -1,28 +1,36 @@
 ﻿using System;
 using System.IO;
-using System.Text;
 using System.Collections.Generic;
 using System.Linq;
 using ClosedXML.Excel;
 
 class Program
 {
+    const double FS = 15.0;
+    const double DT = 1.0 / FS;
+    const double MAX_TIME = 10.0;
+    const int MAX_BIN = (int)(FS * MAX_TIME);
+
     static void Main()
     {
-        string sourceFolder = "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP120";
+        string sourceFolder =
+            "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ";
         string csvPattern = "*.csv";
-        string outputXlsxAll = "/Users/moriyama_yuto/ExcelColumnExtract/converted.xlsx";
+        string tempXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/converted.xlsx";
         string resultXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/result.xlsx";
 
-        // subject -> task -> list of G合計値
-        var dataSumG = new Dictionary<string, Dictionary<int, List<double>>>(StringComparer.OrdinalIgnoreCase);
-
-        var csvFiles = Directory.GetFiles(sourceFolder, csvPattern, SearchOption.AllDirectories);
-        if (csvFiles.Length == 0)
+        // ★ 除外する実験者
+        var excludeSubjects = new HashSet<string>
         {
-            Console.WriteLine("CSVファイルが見つかりません");
-            return;
-        }
+            "EXP104", "EXP107", "EXP113", "EXP116", "EXP119"
+        };
+
+        // task → bin → speeds
+        var taskBinsAll = new Dictionary<int, Dictionary<int, List<double>>>();
+        var taskBinsFiltered = new Dictionary<int, Dictionary<int, List<double>>>();
+
+        var csvFiles = Directory.GetFiles(
+            sourceFolder, csvPattern, SearchOption.AllDirectories);
 
         foreach (var csvPath in csvFiles)
         {
@@ -30,150 +38,119 @@ class Program
             var parts = fname.Split('_');
             if (parts.Length < 2) continue;
 
-            string subject = parts[0];
-            var taskAndRun = parts[1].Split('-');
-            if (!int.TryParse(taskAndRun[0], out int taskNumber)) continue;
+            string subject = parts[0];   // ★ EXP101 など
+            var taskRun = parts[1].Split('-');
+            if (!int.TryParse(taskRun[0], out int task)) continue;
 
-            // CSV → 一時Excel
+            bool isExcluded = excludeSubjects.Contains(subject);
+
+            // CSV → Excel
             using (var wbTemp = new XLWorkbook())
             {
                 var wsTemp = wbTemp.Worksheets.Add("Sheet1");
-                using var reader = new StreamReader(csvPath, Encoding.UTF8);
+                using var reader = new StreamReader(csvPath);
                 int row = 1;
                 while (!reader.EndOfStream)
                 {
-                    var vals = (reader.ReadLine() ?? "").Split(',');
+                    var vals = reader.ReadLine()?.Split(',') ?? Array.Empty<string>();
                     for (int i = 0; i < vals.Length; i++)
                         wsTemp.Cell(row, i + 1).Value = vals[i];
                     row++;
                 }
-                wbTemp.SaveAs(outputXlsxAll);
+                wbTemp.SaveAs(tempXlsx);
             }
 
-            using var allWb = new XLWorkbook(outputXlsxAll);
-            var ws = allWb.Worksheet("Sheet1");
-
+            using var wb = new XLWorkbook(tempXlsx);
+            var ws = wb.Worksheet("Sheet1");
             var lastRowUsed = ws.LastRowUsed();
-            if (lastRowUsed == null)
-            {
-                Console.WriteLine("シートが空です: " + csvPath);
-                continue;
-            }
+            if (lastRowUsed == null) continue;
+
             int lastRow = lastRowUsed.RowNumber();
 
-            bool rStarted = false;   // R=True を通過したか
-            bool inRange = false;    // Gの加算開始フラグ
-            bool finished = false;
-
-            int sCount = 0;
-            int sStartRow = -1;
-
-            double sumG = 0.0;
+            bool rStarted = false;
+            double? startTime = null;
 
             for (int r = 2; r <= lastRow; r++)
             {
-                // --- R列チェック ---
+                if (!double.TryParse(ws.Cell(r, "C").GetString(), out double time)) continue;
+                if (!double.TryParse(ws.Cell(r, "D").GetString(), out double speedKm)) continue;
+
+                double speed = speedKm / 3.6;
+
                 if (!rStarted &&
                     bool.TryParse(ws.Cell(r, "R").GetString(), out bool rBool) &&
                     rBool)
                 {
                     rStarted = true;
-                    sCount = 0;
-                    sStartRow = -1;
+                    startTime = time;
+                    continue;
                 }
 
-                // --- S列チェック（R後のみ有効） ---
-                if (rStarted && !inRange)
-                {
-                    if (ws.Cell(r, "S").GetString() == "1")
-                    {
-                        if (sCount == 0)
-                            sStartRow = r;   // 最初の1
+                if (!rStarted || !startTime.HasValue) continue;
 
-                        sCount++;
+                double relTime = time - startTime.Value;
+                if (relTime < 0 || relTime > MAX_TIME) continue;
 
-                        // ★ 3連続に到達 → 開始
-                        if (sCount >= 3)
-                        {
-                            inRange = true;
-                        }
-                    }
-                    else
-                    {
-                        sCount = 0;
-                        sStartRow = -1;
-                    }
-                }
+                int bin = (int)Math.Round(relTime * FS);
+                if (bin < 0 || bin >= MAX_BIN) continue;
 
-                // --- G列：絶対値を加算 ---
-                if (inRange && !finished)
-                {
-                    if (double.TryParse(ws.Cell(r, "G").GetString(), out double gVal))
-                        sumG += Math.Abs(gVal);
-                }
+                // ===== 全員 =====
+                Add(taskBinsAll, task, bin, speed);
 
-                // --- U列：終了 ---
-                if (inRange &&
-                    bool.TryParse(ws.Cell(r, "U").GetString(), out bool uBool) &&
-                    uBool)
-                {
-                    finished = true;
-                    break;
-                }
+                // ===== 除外後 =====
+                if (!isExcluded)
+                    Add(taskBinsFiltered, task, bin, speed);
             }
-
-            if (!inRange || !finished)
-            {
-                Console.WriteLine($"[{Path.GetFileName(csvPath)}] S→U 区間が見つかりません");
-                continue;
-            }
-
-            // 保存
-            dataSumG.TryAdd(subject, new Dictionary<int, List<double>>());
-            dataSumG[subject].TryAdd(taskNumber, new List<double>());
-            dataSumG[subject][taskNumber].Add(sumG);
-
-            // ログ
-            Console.WriteLine($"[{Path.GetFileName(csvPath)}]");
-            Console.WriteLine($"  G合計 (R→U): {sumG:F4}");
-            Console.WriteLine();
         }
 
-        // ===== result.xlsx に書き込み =====
+        // ===== result.xlsx に追記 =====
         using var wbResult = new XLWorkbook(resultXlsx);
         var wsResult = wbResult.Worksheet("Result");
 
-        foreach (var subject in dataSumG.Keys)
+        int startCol = (wsResult.LastColumnUsed()?.ColumnNumber() ?? 1) + 1;
+
+        // Time列
+        if (wsResult.Cell(1, 1).IsEmpty())
         {
-            int row = FindOrCreateSubjectRow(wsResult, subject);
+            wsResult.Cell(1, 1).Value = "Time[s]";
+            for (int b = 0; b < MAX_BIN; b++)
+                wsResult.Cell(b + 2, 1).Value = b * DT;
+        }
 
-            foreach (var task in dataSumG[subject].Keys)
-            {
-                int col = TaskStartCol(task);
-                wsResult.Cell(1, col).Value = $"task{task}";
-                wsResult.Cell(2, col).Value = "G合計";
+        foreach (var task in taskBinsAll.Keys.OrderBy(t => t))
+        {
+            // 全員
+            wsResult.Cell(1, startCol).Value = $"Task{task}_All";
+            WriteBins(wsResult, startCol, taskBinsAll[task]);
 
-                wsResult.Cell(row, col).Value = dataSumG[subject][task].Average();
-            }
+            // 除外
+            wsResult.Cell(1, startCol + 1).Value = $"Task{task}_Excluded";
+            if (taskBinsFiltered.ContainsKey(task))
+                WriteBins(wsResult, startCol + 1, taskBinsFiltered[task]);
+
+            startCol += 2;
         }
 
         wbResult.SaveAs(resultXlsx);
-        Console.WriteLine("アップデート完了！");
+        Console.WriteLine("追記完了！");
     }
 
-    // ===== 補助メソッド =====
-
-    static int TaskStartCol(int taskNumber)
-        => 2 + (taskNumber - 1);
-
-    static int FindOrCreateSubjectRow(IXLWorksheet ws, string subject)
+    static void Add(
+        Dictionary<int, Dictionary<int, List<double>>> dict,
+        int task, int bin, double value)
     {
-        int lastRow = ws.LastRowUsed()?.RowNumber() ?? 2;
-        for (int r = 3; r <= lastRow; r++)
-            if (ws.Cell(r, 1).GetString().Equals(subject, StringComparison.OrdinalIgnoreCase))
-                return r;
+        if (!dict.ContainsKey(task))
+            dict[task] = new Dictionary<int, List<double>>();
+        if (!dict[task].ContainsKey(bin))
+            dict[task][bin] = new List<double>();
+        dict[task][bin].Add(value);
+    }
 
-        ws.Cell(lastRow + 1, 1).Value = subject;
-        return lastRow + 1;
+    static void WriteBins(
+        IXLWorksheet ws, int col,
+        Dictionary<int, List<double>> bins)
+    {
+        foreach (var kv in bins)
+            ws.Cell(kv.Key + 2, col).Value = kv.Value.Average();
     }
 }
