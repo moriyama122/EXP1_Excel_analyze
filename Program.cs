@@ -1,58 +1,45 @@
 ﻿using System;
 using System.IO;
+using System.Text;
 using System.Collections.Generic;
-using System.Linq;
 using ClosedXML.Excel;
 
 class Program
 {
-    const double FS = 15.0;
-    const double DT = 1.0 / FS;
-    const double MAX_TIME = 10.0;
-    const int MAX_BIN = (int)(FS * MAX_TIME);
+    const double JERK_THRESHOLD = 2.0; // m/s^3
+    const double MIN_DURATION = 0.2;   // s
 
     static void Main()
     {
         string sourceFolder =
-            "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ";
+            "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/EXP1データ/EXP114";
         string csvPattern = "*.csv";
         string tempXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/converted.xlsx";
         string resultXlsx = "/Users/moriyama_yuto/ExcelColumnExtract/result.xlsx";
 
-        // ★ 除外する実験者
-        var excludeSubjects = new HashSet<string>
+        // ★ jerk発生時刻（C列）だけを溜める
+        var jerkTimes = new List<double>();
+
+        var csvFiles = Directory.GetFiles(sourceFolder, csvPattern, SearchOption.AllDirectories);
+        if (csvFiles.Length == 0)
         {
-            "EXP104", "EXP107", "EXP113", "EXP116", "EXP119"
-        };
-
-        // task → bin → speeds
-        var taskBinsAll = new Dictionary<int, Dictionary<int, List<double>>>();
-        var taskBinsFiltered = new Dictionary<int, Dictionary<int, List<double>>>();
-
-        var csvFiles = Directory.GetFiles(
-            sourceFolder, csvPattern, SearchOption.AllDirectories);
+            Console.WriteLine("CSVファイルが見つかりません");
+            return;
+        }
 
         foreach (var csvPath in csvFiles)
         {
-            var fname = Path.GetFileNameWithoutExtension(csvPath);
-            var parts = fname.Split('_');
-            if (parts.Length < 2) continue;
+            Console.WriteLine($"処理開始: {csvPath}");
 
-            string subject = parts[0];   // ★ EXP101 など
-            var taskRun = parts[1].Split('-');
-            if (!int.TryParse(taskRun[0], out int task)) continue;
-
-            bool isExcluded = excludeSubjects.Contains(subject);
-
-            // CSV → Excel
+            // CSV → 一時Excel
             using (var wbTemp = new XLWorkbook())
             {
                 var wsTemp = wbTemp.Worksheets.Add("Sheet1");
-                using var reader = new StreamReader(csvPath);
+                using var reader = new StreamReader(csvPath, Encoding.UTF8);
                 int row = 1;
                 while (!reader.EndOfStream)
                 {
-                    var vals = reader.ReadLine()?.Split(',') ?? Array.Empty<string>();
+                    var vals = (reader.ReadLine() ?? "").Split(',');
                     for (int i = 0; i < vals.Length; i++)
                         wsTemp.Cell(row, i + 1).Value = vals[i];
                     row++;
@@ -62,95 +49,105 @@ class Program
 
             using var wb = new XLWorkbook(tempXlsx);
             var ws = wb.Worksheet("Sheet1");
+
             var lastRowUsed = ws.LastRowUsed();
-            if (lastRowUsed == null) continue;
+            if (lastRowUsed == null)
+            {
+                Console.WriteLine($"[{Path.GetFileName(csvPath)}] データなし");
+                continue;
+            }
 
             int lastRow = lastRowUsed.RowNumber();
 
-            bool rStarted = false;
-            double? startTime = null;
+            double? prevTime = null;
+            double? prevSpeed = null;
+            double? prevAcc = null;
+
+            double currentDuration = 0.0;
+            double totalDuration = 0.0;   // ★ CSVごとのJerk累積時間
+            double? jerkStartTime = null;
 
             for (int r = 2; r <= lastRow; r++)
             {
                 if (!double.TryParse(ws.Cell(r, "C").GetString(), out double time)) continue;
                 if (!double.TryParse(ws.Cell(r, "D").GetString(), out double speedKm)) continue;
 
-                double speed = speedKm / 3.6;
+                double speed = speedKm / 3.6; // km/h → m/s
 
-                if (!rStarted &&
-                    bool.TryParse(ws.Cell(r, "R").GetString(), out bool rBool) &&
-                    rBool)
+                if (prevTime.HasValue && prevSpeed.HasValue)
                 {
-                    rStarted = true;
-                    startTime = time;
-                    continue;
+                    double dt = time - prevTime.Value;
+                    if (dt <= 0) goto NEXT;
+
+                    double acc = (speed - prevSpeed.Value) / dt;
+
+                    if (prevAcc.HasValue)
+                    {
+                        double jerk = (acc - prevAcc.Value) / dt;
+
+                        if (Math.Abs(jerk) >= JERK_THRESHOLD)
+                        {
+                            if (currentDuration == 0)
+                                jerkStartTime = time; // jerk開始時刻
+
+                            currentDuration += dt;
+                        }
+                        else
+                        {
+                            if (currentDuration >= MIN_DURATION && jerkStartTime.HasValue)
+                            {
+                                jerkTimes.Add(jerkStartTime.Value);
+                                totalDuration += currentDuration;
+
+                                Console.WriteLine(
+                                    $"  Jerk検知: {jerkStartTime.Value:F3}s"
+                                );
+                            }
+                            currentDuration = 0.0;
+                            jerkStartTime = null;
+                        }
+                    }
+                    prevAcc = acc;
                 }
 
-                if (!rStarted || !startTime.HasValue) continue;
-
-                double relTime = time - startTime.Value;
-                if (relTime < 0 || relTime > MAX_TIME) continue;
-
-                int bin = (int)Math.Round(relTime * FS);
-                if (bin < 0 || bin >= MAX_BIN) continue;
-
-                // ===== 全員 =====
-                Add(taskBinsAll, task, bin, speed);
-
-                // ===== 除外後 =====
-                if (!isExcluded)
-                    Add(taskBinsFiltered, task, bin, speed);
+            NEXT:
+                prevTime = time;
+                prevSpeed = speed;
             }
+
+            // 末尾処理
+            if (currentDuration >= MIN_DURATION && jerkStartTime.HasValue)
+            {
+                jerkTimes.Add(jerkStartTime.Value);
+                totalDuration += currentDuration;
+
+                Console.WriteLine(
+                    $"  Jerk検知: {jerkStartTime.Value:F3}s"
+                );
+            }
+
+            // ★ あなたが追加したかったログ
+            if (totalDuration <= 0)
+                continue;
+
+            Console.WriteLine(
+                $"[{Path.GetFileName(csvPath)}] Jerk累積時間 = {totalDuration:F3}s"
+            );
         }
 
-        // ===== result.xlsx に追記 =====
+        // ===== Result.xlsx に書き出し =====
         using var wbResult = new XLWorkbook(resultXlsx);
         var wsResult = wbResult.Worksheet("Result");
 
-        int startCol = (wsResult.LastColumnUsed()?.ColumnNumber() ?? 1) + 1;
+        int writeRow = Math.Max(35, wsResult.LastRowUsed()?.RowNumber() + 1 ?? 35);
 
-        // Time列
-        if (wsResult.Cell(1, 1).IsEmpty())
+        foreach (var t in jerkTimes)
         {
-            wsResult.Cell(1, 1).Value = "Time[s]";
-            for (int b = 0; b < MAX_BIN; b++)
-                wsResult.Cell(b + 2, 1).Value = b * DT;
-        }
-
-        foreach (var task in taskBinsAll.Keys.OrderBy(t => t))
-        {
-            // 全員
-            wsResult.Cell(1, startCol).Value = $"Task{task}_All";
-            WriteBins(wsResult, startCol, taskBinsAll[task]);
-
-            // 除外
-            wsResult.Cell(1, startCol + 1).Value = $"Task{task}_Excluded";
-            if (taskBinsFiltered.ContainsKey(task))
-                WriteBins(wsResult, startCol + 1, taskBinsFiltered[task]);
-
-            startCol += 2;
+            wsResult.Cell(writeRow, 2).Value = t; // B列
+            writeRow++;
         }
 
         wbResult.SaveAs(resultXlsx);
-        Console.WriteLine("追記完了！");
-    }
-
-    static void Add(
-        Dictionary<int, Dictionary<int, List<double>>> dict,
-        int task, int bin, double value)
-    {
-        if (!dict.ContainsKey(task))
-            dict[task] = new Dictionary<int, List<double>>();
-        if (!dict[task].ContainsKey(bin))
-            dict[task][bin] = new List<double>();
-        dict[task][bin].Add(value);
-    }
-
-    static void WriteBins(
-        IXLWorksheet ws, int col,
-        Dictionary<int, List<double>> bins)
-    {
-        foreach (var kv in bins)
-            ws.Cell(kv.Key + 2, col).Value = kv.Value.Average();
+        Console.WriteLine("アップデート完了！");
     }
 }
