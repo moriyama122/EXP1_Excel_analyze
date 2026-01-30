@@ -6,7 +6,7 @@ using ClosedXML.Excel;
 
 class Program
 {
-    const double WINDOW = 5.0; // 秒
+    const double TARGET_TIME = 5.0; // R後5秒
 
     static void Main()
     {
@@ -18,11 +18,8 @@ class Program
         string resultXlsx =
             "/Users/moriyama_yuto/Library/CloudStorage/OneDrive-KyushuUniversity/実験/result.xlsx";
 
-        // subject → task → values
-        var maxE = new Dictionary<string, Dictionary<int, List<double>>>();
-        var maxF = new Dictionary<string, Dictionary<int, List<double>>>();
-        var sumE = new Dictionary<string, Dictionary<int, List<double>>>();
-        var sumF = new Dictionary<string, Dictionary<int, List<double>>>();
+        // subject → task → values(D列)
+        var speedAt5s = new Dictionary<string, Dictionary<int, List<double>>>();
 
         var csvFiles = Directory.GetFiles(
             sourceFolder, csvPattern, SearchOption.AllDirectories);
@@ -63,17 +60,14 @@ class Program
 
             bool rStarted = false;
             double? startTime = null;
-
-            double eMax = double.MinValue;
-            double fMax = double.MinValue;
-            double eSum = 0.0;
-            double fSum = 0.0;
+            double? valueAt5s = null;
 
             for (int r = 2; r <= lastRow; r++)
             {
                 if (!double.TryParse(ws.Cell(r, "C").GetString(), out double time))
                     continue;
 
+                // R=True を検知
                 if (!rStarted &&
                     bool.TryParse(ws.Cell(r, "R").GetString(), out bool rBool) &&
                     rBool)
@@ -83,73 +77,48 @@ class Program
                     continue;
                 }
 
-                if (!rStarted || !startTime.HasValue) continue;
-                if (time - startTime.Value > WINDOW) break;
+                if (!rStarted || !startTime.HasValue)
+                    continue;
 
-                if (double.TryParse(ws.Cell(r, "E").GetString(), out double e))
+                // R後5秒を超えた最初の行
+                if (time - startTime.Value >= TARGET_TIME)
                 {
-                    eMax = Math.Max(eMax, e);
-                    eSum += e;
-                }
+                    if (double.TryParse(ws.Cell(r, "D").GetString(), out double d))
+                        valueAt5s = d;
 
-                if (double.TryParse(ws.Cell(r, "F").GetString(), out double f))
-                {
-                    fMax = Math.Max(fMax, f);
-                    fSum += f;
+                    break;
                 }
             }
 
-            if (eMax == double.MinValue || fMax == double.MinValue) continue;
+            if (!valueAt5s.HasValue)
+                continue;
 
-            // Dictionary 初期化
-            maxE.TryAdd(subject, new Dictionary<int, List<double>>());
-            maxF.TryAdd(subject, new Dictionary<int, List<double>>());
-            sumE.TryAdd(subject, new Dictionary<int, List<double>>());
-            sumF.TryAdd(subject, new Dictionary<int, List<double>>());
-
-            maxE[subject].TryAdd(task, new List<double>());
-            maxF[subject].TryAdd(task, new List<double>());
-            sumE[subject].TryAdd(task, new List<double>());
-            sumF[subject].TryAdd(task, new List<double>());
-
-            maxE[subject][task].Add(eMax);
-            maxF[subject][task].Add(fMax);
-            sumE[subject][task].Add(eSum);
-            sumF[subject][task].Add(fSum);
+            speedAt5s.TryAdd(subject, new Dictionary<int, List<double>>());
+            speedAt5s[subject].TryAdd(task, new List<double>());
+            speedAt5s[subject][task].Add(valueAt5s.Value);
         }
 
         // ===== result.xlsx に反映 =====
         using var wbResult = new XLWorkbook(resultXlsx);
         var wsResult = wbResult.Worksheet("Result");
 
-        foreach (var subject in maxE.Keys)
+        foreach (var subject in speedAt5s.Keys)
         {
             int row = FindOrCreateRow(wsResult, subject);
 
             for (int task = 1; task <= 3; task++)
             {
-                // 最大値
-                if (maxE[subject].ContainsKey(task))
+                if (speedAt5s[subject].ContainsKey(task))
+                {
+                    // B,C,D 列に task1,2,3
                     wsResult.Cell(row, 1 + task).Value =
-                        maxE[subject][task].Average();   // B–D
-
-                if (maxF[subject].ContainsKey(task))
-                    wsResult.Cell(row, 5 + task).Value =
-                        maxF[subject][task].Average();   // F–H
-
-                // 合計値
-                if (sumE[subject].ContainsKey(task))
-                    wsResult.Cell(row, 9 + task).Value =
-                        sumE[subject][task].Average();   // J–L
-
-                if (sumF[subject].ContainsKey(task))
-                    wsResult.Cell(row, 13 + task).Value =
-                        sumF[subject][task].Average();   // N–P
+                        speedAt5s[subject][task].Average();
+                }
             }
         }
 
         wbResult.SaveAs(resultXlsx);
-        Console.WriteLine("集計完了！");
+        Console.WriteLine("抽出完了！");
     }
 
     static int FindOrCreateRow(IXLWorksheet ws, string subject)
