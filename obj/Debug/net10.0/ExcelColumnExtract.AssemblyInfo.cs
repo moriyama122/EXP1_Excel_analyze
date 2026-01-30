@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ExcelColumnExtract")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+714618e4438ce62baeefb5472925f1fedae38bd8")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+01f3f8c20380eb96930f08ceeded31b12d0ce860")]
 [assembly: System.Reflection.AssemblyProductAttribute("ExcelColumnExtract")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ExcelColumnExtract")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
